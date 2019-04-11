@@ -1,0 +1,297 @@
+# Storing Storm Data - A Database Project
+This file contains notes on creating a database project that will store real life storm data. There are about seven main parts to follow along with. There are a few points to be made first before we get started:
+* This document will be written in markdown format.
+* This document is stored as a .txt file for easy transfering and to account for the size of a real Postgres database. The code in the text can **very** easily be transferred over.
+* For an actual implemented version of a database project, look to the "Baseball" project stored in the Github repo. This contains a complete database, with a DB file included and code fully implemented.
+
+## Introduction
+Imagine this scenario.
+
+Recently, the International Hurricane Watchgroup (IHW) has been asked to update their analysis tools. Because of the increase in public awareness of hurricanes, they are required to be more diligient with the analysis of historical hurricane data they share across the organization. They have asked you, someone with experience in databases, to help work with their team to productionize their services.
+
+Accepting the job, their team tells you that they have been having trouble sharing data across the teams and keeping it consistent. From what they've told you, it seems that their method of sharing the data with their data anaylsts has been to save a CSV file on their local servers and have every data analyst pull the data down. Then, each analyst uses a local SQLite engine to store the CSV, run their queries, and send their results around.
+
+From what they have told you, you might be thinking that this is an inefficient way of sharing data. To understand what you will be working on, they have sent you a CSV file. Their CSV file contains the following fields:
+* fid - ID for the row
+* year - Recorded year
+* month - Recorded month
+* day - Recorded date
+* ad_time - Recorded time in UTC
+* btid - Hurricane ID
+* name - Name of the hurricane
+* lat - Latitude of the recorded location
+* long - Longitude of the recorded location
+* wind_kts - Wind speed in knots per second
+* pressure - Atmospheric pressure of the hurricane
+* cat - Hurricane category
+* basin - The basin the hurricane is located
+* shape_leng - Hurricane shape length
+
+Your job is to accomplish the following:
+* Database for the IHW to store their tables.
+* Table that contains the fields detailed in the CSV file
+* User that can update, read, and insert into a table of the data.
+* Insert the data into the table.
+
+To get started, the project notes before this one instruct on how to properly install PostgreSQL and get it working. Once that is done, we can get started!
+
+## The CSV
+There are two ways you can work with the CSV file in this project. The first, is that you can download the file from this link: https://dq-content.s3.amazonaws.com/251/storm_data.csv. This file is already included in the source folder as well. Otherwise, you can use Python to programmatically download the file and read it like any other file. This is possible using the Python standard library, urllib. If the latter is chosen (the project notes assume this), the following code can be run:
+
+
+# get libraries
+import io
+from urllib import request
+
+# open file
+response = request.urlopen('https://www.example.com/some_file.csv')
+reader = csv.reader(io.TextIOWrapper(response))
+
+# read lines
+for line in reader:
+    print(line)
+
+
+The urlopen() method is part of the request module in the urllib library. It opens up the webpage requested and creates an HTML response object. Before we can use the response object as a file, we need to use another module, io.
+
+We use the io module to fake a file descriptor by using the TextIOWrapper() method. This wraps any string-like object and forces it to act like a Python file descriptor.
+
+## Exploring the Dataset
+Now that you have downloaded the file, it's time to take a look at the data entries. Here are a few of the rows with column headers (may not be aligned due to formatting, but you get the idea).
+FID	YEAR	MONTH	DAY	AD_TIME	BTID	NAME	LAT	LONG	WIND_KTS	PRESSURE	CAT	BASIN	Shape_Leng
+2001	1957	8	8	1800Z	63	NOTNAMED	22.5	-140	50	0	TS	Eastern Pacific	1.140175
+2002	1961	10	3	1200Z	116	PAULINE	22.1	-140.2	45	0	TS	Eastern Pacific	1.16619
+2003	1962	8	29	0600Z	124	C	18	-140	45	0	TS	Eastern Pacific	2.10238
+2004	1967	7	14	0600Z	168	DENISE	16.6	-139.5	45	0	TS	Eastern Pacific	2.12132
+2005	1972	8	16	1200Z	251	DIANA	18.5	-139.8	70	0	H1	Eastern Pacific	1.702939
+2006	1976	7	22	0000Z	312	DIANA	18.6	-139.8	30	0	TD	Eastern Pacific	1.6
+2007	1978	8	26	1200Z	342	KRISTY	21.4	-140.2	45	0	TS	Eastern Pacific	1.30384
+2008	1980	9	24	1800Z	371	KAY	20.5	-140.2	75	0	H1	Eastern Pacific	1.220656
+2009	1970	8	23	0000Z	223	MAGGIE	14.9	-139.4	45	0	TS	Eastern Pacific	0.921954
+
+Within this file, you may see that there are a bunch of different datatypes for each of the defined columns.
+
+In the FID column, we see that the numbers vary between 2001 and on. From first observation, it already exceeds the small integer type. If we were to guess, this column fits within the INTEGER size.
+
+Furthermore, the last column, shape length, seems to keep the same precision of 1 digit before the decimal and 6 digits after. Recall that a datatype which uses precision is the DECIMAL type. Using DECIMAL, we can specify a max scale and precision that will ensure the data stays within the ranges.
+
+We can do a bit of exploring with the following code below (documented, of course):
+
+
+# get necessary modules
+import psycopg2
+import pandas as pd
+
+# read in data and see a few rows
+data = pd.read_csv('https://dq-content.s3.amazonaws.com/251/storm_data.csv')
+data.head()
+
+# see the columns and length 
+print(len(data))
+list(data.columns)
+
+# get some info
+data.info()
+
+# get interested columns (commented out)
+# data.columns = [['fid', 'year', 'month', 'day', 'ad_time']]
+
+# get the max length of our data per data type in a dict
+col_len_dict = {}
+for col in list(data.columns):
+    max_len = 0
+    for i in range(1,len(data)):
+        if max_len < len(str(data[col][i])):
+            max_len = len(str(data[col][i]))
+    print(col + " " + str(max_len))
+    col_len_dict[col] = max_len
+
+# get datetime
+from datetime import datetime
+
+# adjust the ad_time column by removing 'Z', converting to timestamp
+data['AD_TIME'] = [datetime.strptime(a[0:2]+":"+a[2:4], "%H:%M").time() for a in data['AD_TIME']]
+
+# see the max and min numbers of LONG, LAT, and Shape_Leng for more info
+print("LONG min = "+str(min(data['LONG'])))
+print("LONG max = "+str(max(data['LONG'])))
+print()
+print("LAT min = "+str(min(data['LAT'])))
+print("LAT max = "+str(max(data['LAT'])))
+print()
+print("Shape_Leng min = "+str(min(data['Shape_Leng'])))
+print("Shape_Leng max = "+str(max(data['Shape_Leng'])))
+print()
+print("WIND_KTS min = "+str(min(data['WIND_KTS'])))
+print("WIND_KTS max = "+str(max(data['WIND_KTS'])))
+print()
+print("PRESSURE min = "+str(min(data['PRESSURE'])))
+print("PRESSURE max = "+str(max(data['PRESSURE'])))
+
+## Creating a Table
+That that the pesky part (ad_time) of the data has been dealt with, we can create a table for this data. Note that we can run the following code anytime should we "mess up":
+
+# drops the table so we can restart fresh
+conn = psycopg2.connect("dbname=dq user=doge")
+cur = conn.cursor()
+cur.execute("DROP TABLE storm")
+conn.commit()
+
+
+And the following code below will actually create the table. ***Note: the database that we will be using in these notes has been created with the dbname dq, user doge, and password password as an example.***
+
+
+# lowercase columns for ease of interface first
+data.columns = [['fid', 'year', 'month', 'day', 'ad_time', 'btid', 'name', 'lat', 'long', 'wind_kts', 'pressure', 'cat', 'basin', 'shape_len']]
+
+# get salalchemy, a powerful Python library to connect to DBs (optional - just import the create_engine method)
+# import sqlalchemy
+from sqlalchemy import create_engine
+
+# create the table using engine, and to_sql from pandas
+engine = create_engine('postgresql+psycopg2://doge:password@localhost/dq')
+data.to_sql('storm', engine, dtype = {'fid': sqlalchemy.types.INT, \
+                                         'year':sqlalchemy.types.INT, \
+                                         'month': sqlalchemy.types.INT, \
+                                         'day': sqlalchemy.types.INT, \
+                                         'ad_time': sqlalchemy.types.TIME(timezone=False), \
+                                         'btid': sqlalchemy.types.CHAR(length=4), \
+                                         'name': sqlalchemy.types.CHAR(length=9), \
+                                         'lat': sqlalchemy.types.NUMERIC(precision=4, scale=2, asdecimal=True), \
+                                         'long': sqlalchemy.types.NUMERIC(precision=7, scale=4, asdecimal=True), \
+                                         'wind_kts': sqlalchemy.types.INT, \
+                                         'pressure': sqlalchemy.types.INT, \
+                                         'cat': sqlalchemy.types.CHAR(length=2), \
+                                         'basin': sqlalchemy.types.CHAR(length=15), \
+                                         'shape_len': sqlalchemy.types.NUMERIC(precision=9, scale=7, asdecimal=True)})
+
+# connect to the engine to add a primary key
+with engine.connect() as conn:
+    conn.execute('ALTER TABLE stormdata ADD PRIMARY KEY ("fid");')
+
+
+A reminder that this is just one of many ways to create a table!
+
+## Create the Users
+With a table set up, it's now time to create a user on the Postgres database that can insert, update, and read the data but not delete. This is to make sure that someone who might get a hold of this user does not issue a destructive command. Essentially, this is like creating a "data production" user whose job it is is to always write new and existing data to the table.
+
+Futhermore, even though it wasn't according to the spec, we know that the IHW team's analysts just run read queries on the data. Also, since the analysts only know SQLite queries, they may not be well-versed in a production database. As such, it might be risky handing out a general production user for them to query their data.
+
+From what you have learned about security and restricting well meaning users, it might be a good idea to restrict those analysts from some commands. Those commands can be anything from adding new data to the table or changing the values. You should decide what commands should be given to the analyst user.
+
+The code below takes all of this into account and creates some groups; an admin user and subsequent regular users:
+
+
+# connect to db and create some groups (remember to commit at the end as shown)
+conn = psycopg2.connect("dbname=dq user=doge")
+cur = conn.cursor()
+cur.execute('''
+CREATE USER stormadmin WITH CREATEDB PASSWORD 'admin';
+CREATE GROUP stormusers NOLOGIN;
+REVOKE ALL ON storm FROM stormusers;
+GRANT SELECT ON storm TO stormusers;
+''')
+conn.commit()
+
+
+Now we can add new users to the group stormusers as necessary and put all of the access on them at once isntead of individually revoking and granting for each one.
+
+# Inserting the Data
+With your users completed, it's time to do the final task: insert the data into the table! While pandas already did this, it was an exact copy, and we can do some things such as mak the dates a little better. Useful commands include COPY, INSERT, or the copy_*() methods in the psycopg2 package. 
+
+Below, we set out an example of this whole process (note that we connect to the db with each noted portion of the code; this is not necessary and just makes copy and pasting it a little easier to run certain portions in isolation):
+
+
+# connect to database, and add the column timestamp (combination of other time columns)
+conn = psycopg2.connect("dbname=dq user=doge")
+cur = conn.cursor()
+cur.execute("""
+ALTER TABLE storm ADD COLUMN date TIMESTAMP;
+UPDATE storm SET date = to_date(year || '-' || month || '-' || day || ' ' || ad_time, 'YYYY-MM-DD HH24:MI:SS');
+""")
+conn.commit()
+
+# remove used columns
+conn = psycopg2.connect("dbname=dq user=doge")
+cur = conn.cursor()
+cur.execute("""
+ALTER TABLE storm DROP COLUMN day;
+ALTER TABLE storm DROP COLUMN month;
+ALTER TABLE storm DROP COLUMN year;
+ALTER TABLE storm DROP COLUMN ad_time;
+""")
+conn.commit()
+
+# if you ever get new data, the following will insert it:
+# first, turn the data into a list of tuples
+values = new_data.values.tolist()
+sql = "INSERT INTO storm(fid, btid, name, lat, long, wind_kts, pressure, cat, basin, shape_len, date) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+conn = psycopg2.connect("dbname=dq user=doge")
+cur = conn.cursor()
+cur.executemany(sql, values)
+conn.commit()
+cur.close()
+
+# check if the length matches - all should be the same if no errors
+print(len(data) + len(new_data))
+
+
+After all of that, your data should be sitting in your storm table quite nicely with no errors involved. If there is, looking at the documentation should help (formatting documentation: https://www.postgresql.org/docs/7.4/functions-formatting.html).
+
+## Further Analysis / Next Steps
+Congratuations on creating your own table, user, and database in Postgres! Following these steps is just the beginning, there is a lot more you can do with the Postgres table. Here's just a small list to add (detailed below, but due to nature of project will not be implemented because they require a large file or are easily done with a single line of code):
+
+## Readonly Group
+At the time of writing, this is already implemented! At first, only a read-only user was to be made, but it is much more efficient to have a read-only group. This way, not only do you have to keep track of less things (knowing which group a user belongs to automatically lets you know their permissions), you also spend less time revoking and granting certain permissions to a user as well; simply add or remove them from a group.
+
+Things like groups are very helpful in the database management process and should not be overlooked. As the main superuser yourself, it is your responsibility to manage the users under you.
+
+Informing users about which group they are in may also help. In a perfect world, if a user notices they can do something they are not supposed to, they can inform you and act like an extra set of eyes for you to see if there are any bugs in the system.
+
+## New Data
+You can try inserting new data with the file: https://dq-content.s3.amazonaws.com/251/storm_data_additional.csv. This is also added to the source folder under the concatenated _additional.
+
+This dataset looks different from the original on purpose for the sake of additional data cleaning. Below is some sample code that may help with it:
+
+
+# read in new data and see some rows
+new_data = pd.read_csv('https://dq-content.s3.amazonaws.com/251/storm_data_additional.csv')
+new_data.head()
+
+# rename columns lower
+new_data.columns = [['fid', 'date', 'btid', 'name', 'lat', 'long', 'wind_kts', 'pressure', 'cat', 'basin', 'shape_len']]
+
+# new length dict - notice that sizes are different
+col_len_dict2 = {}
+for col in list(new_data.columns):
+    max_len = 0
+    for i in range(0,len(new_data)):
+        if max_len < len(str(new_data[col][i])):
+            max_len = len(str(new_data[col][i]))
+    print(col + " " + str(max_len))
+    col_len_dict2[col] = max_len
+
+# code to adjust the fid column after we realizeit is different
+conn = psycopg2.connect("dbname=dq user=doge")
+cur = conn.cursor()
+cur.execute('''
+ALTER TABLE storm ALTER COLUMN fid TYPE VARCHAR(32);
+''')
+conn.commit()
+
+
+Using this along with the code from the insert section above will correctly add the new data in. Make sure the length is the same afterwards as mentioned before!
+
+## Launching an Instance
+Right now only you have access to your data on your local machine. To share it, you need to use something like a cloud-storage solution. 
+
+There are a couple of examples on how to do this, and there is no right answer. You can launch Postgres on AWS (https://aws.amazon.com/getting-started/tutorials/create-connect-postgresql-db/) or Heroku (https://www.heroku.com/postgres). Each has their own advantages and features that cater to the indivdual and it comes down to preference, so we cannot choose for you here.
+
+Launching your Postgres instance allows users to connect to data anywhere in the cloud and not just on a local machine. The way data was meant to to be accessed! A very powerful implementation, and there are even free options to choose from.
+
+## Conclusion
+This was a nice guide on building a table up from scratch and addressing some management features such as creating users and making groups. The project will forever be on-going though, because with a database it always needs to be managed correctly! This is the difference between a data engineering project and a data science project. They are both on-going in their own different ways.
+
+If the scenario was actually real, you would be well on your way to creating an instance of your database by now and working with the team to create many optimal changes to to both of your likings, and business would continue to be underway. 
+
+As mentioned before, for a complete and fully implemented project on creating and managing a database, the baseball project in the Github repo can also be viewed. The flow created in this project works just as well on its own though! This can then be combined with proper data science and machine learning techniques to perhaps even turn this project into a deparment. Happy engineering~
